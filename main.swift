@@ -4,6 +4,7 @@
 //   browserpark status                        one line per browser
 //   browserpark park|show|toggle <name>|all   by name
 //   browserpark park|show|toggle --port N     by CDP port
+//   browserpark proxy --port N                stop tab commands taking focus: connect clients to N + 10000
 //
 // Why off-screen and not Cmd-H or minimise: both flip document.visibilityState to "hidden" and stall
 // requestAnimationFrame, which breaks pages that wait to be visible. See README.md.
@@ -80,6 +81,9 @@ func discoverBrowsers() -> [Browser] {
         guard text.contains("--remote-debugging-port="), !text.contains("--type="), !text.contains("--headless"),
               let space = text.firstIndex(of: " "), let pid = pid_t(text[..<space]) else { continue }
         let args = String(text[space...])
+        // A shell or script can have the flag in its own command line, so check what's actually running.
+        let executable = (args.range(of: " --").map { String(args[..<$0.lowerBound]) } ?? args).lowercased()
+        guard executable.contains(".app/contents/macos/") || executable.contains("chrome") || executable.contains("chromium") else { continue }
         let profile = flagValue("user-data-dir", in: args)
         var port = Int(flagValue("remote-debugging-port", in: args) ?? "") ?? 0
         if port == 0, let profile,
@@ -137,7 +141,7 @@ enum Geometry {
     }
 }
 
-final class CDP {
+final class CDP: @unchecked Sendable {
     private let ws: URLSessionWebSocketTask
     private var nextId = 0
 
@@ -157,12 +161,16 @@ final class CDP {
         ws.resume()
     }
 
-    deinit { ws.cancel(with: .goingAway, reason: nil) }
+    deinit { close() }
 
-    func send(_ method: String, _ params: [String: Any] = [:]) async throws -> [String: Any] {
+    func close() { ws.cancel(with: .goingAway, reason: nil) }
+
+    func send(_ method: String, _ params: [String: Any] = [:], sessionId: String? = nil) async throws -> [String: Any] {
         nextId += 1
         let id = nextId
-        let body = try JSONSerialization.data(withJSONObject: ["id": id, "method": method, "params": params])
+        var message: [String: Any] = ["id": id, "method": method, "params": params]
+        if let sessionId { message["sessionId"] = sessionId }
+        let body = try JSONSerialization.data(withJSONObject: message)
         try await ws.send(.string(String(decoding: body, as: UTF8.self)))
         while true {
             guard case .string(let text) = try await ws.receive(),
@@ -181,6 +189,7 @@ struct Instance {
     var windows: [WindowInfo] = []
     var pageTitle = ""
     var parked: Bool { running && !windows.isEmpty && windows.allSatisfy(Geometry.isParked) }
+    var anyParked: Bool { windows.contains(where: Geometry.isParked) }
 }
 
 func windowInfo(_ reply: [String: Any], id: Int) -> WindowInfo? {
@@ -282,9 +291,10 @@ final class MenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             lastFront = app
             return
         }
-        // Check it's still parked: `browserpark show` from a terminal moves it before activating it.
+        // `browserpark show` from a terminal moves every window before activating Chrome, so that's
+        // the case to let through. A pop-up leaves the other windows parked, so it still bounces.
         Task {
-            if await inspect(port: port).parked { lastFront?.activate(options: []) }
+            if await inspect(port: port).anyParked { lastFront?.activate(options: []) }
         }
     }
 
@@ -394,6 +404,11 @@ func fail(_ message: String) -> Never {
 
 func runCLI(_ args: [String]) async {
     let command = args[0]
+    if command == "proxy" {
+        guard args.count == 3, args[1] == "--port", let port = Int(args[2]) else { fail("usage: browserpark proxy --port N") }
+        await runProxy(chromePort: port)
+        return
+    }
     let browsers = discoverBrowsers()
     if command == "status" {
         for browser in browsers {
@@ -405,7 +420,7 @@ func runCLI(_ args: [String]) async {
     }
 
     guard ["park", "show", "toggle"].contains(command), args.count >= 2 else {
-        fail("usage: browserpark [status | park|show|toggle <name>|all | park|show|toggle --port N]")
+        fail("usage: browserpark [status | park|show|toggle <name>|all | park|show|toggle --port N | proxy --port N]")
     }
     var targets: [Browser]
     if args[1] == "--port" {

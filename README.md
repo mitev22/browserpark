@@ -40,7 +40,7 @@ To remove it:
 
 ## Start Chrome with these flags
 
-Without `--disable-backgrounding-occluded-windows`, Chrome marks a parked window as covered and its pages go hidden after a few seconds, the same failure as minimising. Start Chrome like this:
+Without `--disable-backgrounding-occluded-windows`, Chrome can treat a parked window as covered and its pages go hidden, the same failure as minimising. We saw this in some test runs but not all, so don't rely on going without it. Start Chrome like this:
 
 ```bash
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
@@ -77,7 +77,7 @@ browserpark toggle --port 9222
 
 While the menu bar app runs, it also:
 
-- **Returns your focus:** if a parked Chrome grabs focus, such as when an agent opens a tab, focus goes back to the app you were using, usually within about 60 ms. That's a repair, not a prevention: keystrokes in that gap can be lost, and if your app is in full screen the screen flickers to the desktop for about 150 ms, because macOS switches Spaces when Chrome takes focus. See [Known limitation](#known-limitation-opening-tabs-takes-focus).
+- **Returns your focus:** if a parked Chrome grabs focus, such as when an agent opens a tab, focus goes back to the app you were using, usually within about 60 ms. That's a repair, not a prevention: keystrokes in that gap can be lost, and if your app is in full screen the screen flickers to the desktop for about 150 ms. [The proxy](#stop-agents-taking-your-focus-the-proxy) prevents it.
 - **Parks new windows:** a new window from a parked browser gets parked within about 3 seconds.
 
 ### Park automatically at launch
@@ -110,9 +110,39 @@ Browsers are named after their `--user-data-dir` folder. To set your own names, 
 - **Keyboard focus:** a parked page reports `document.hasFocus()` as false, like any background window. Pages that only react when focused may behave differently, so bring the window back if something seems stuck.
 - **Page titles:** the menu shows each browser's first tab title. It stays on your Mac.
 
-## Known limitation: opening tabs takes focus
+## Stop agents taking your focus: the proxy
 
-Chrome activates itself when a tab is selected over CDP (`Target.activateTarget`), which is what `agent-browser tab new` does. browserpark can't block that from outside Chrome. Navigating in the current tab, clicking, screenshots and `eval` don't take focus, so prefer `open` in an existing tab where you can. Using a maximised window instead of full screen avoids the Space switch, but not the brief loss of focus.
+Chrome makes itself the active app whenever a tab is selected over CDP, which is what `agent-browser tab new` does. If your app is in full screen, macOS then switches you to the desktop's Space mid-sentence. The menu bar app can only send you back afterwards, so keystrokes in that gap can be lost.
+
+The proxy prevents it. Start it for a browser's debugging port, then connect your client to that port plus 10000:
+
+```bash
+nohup browserpark proxy --port 9222 >/dev/null 2>&1 &
+```
+
+```bash
+agent-browser connect 19222 --session my-session
+```
+
+Your browser and its logins don't restart. Playwright's `connect_over_cdp("http://127.0.0.1:19222")` works the same way.
+
+| Client asks for | What the proxy does |
+|---|---|
+| A new tab (`Target.createTarget`) | Opens it in its own background window, parked if the browser is parked. A background tab in a shared window wouldn't work, because its page reports itself as hidden. |
+| Selecting a tab (`Target.activateTarget`, `Page.bringToFront`) | Answers without telling Chrome if the tab is already showing in its window. |
+| Anything else | Passes it through unchanged. |
+
+In our tests, with another app in front, agent-browser and Playwright opened, switched, clicked and closed tabs without Chrome taking focus once.
+
+**Limits**
+
+- **New tabs are separate windows.** Pages still work normally, but you'll see one parked window per tab instead of tabs in one window.
+- **Older tabs:** selecting a hidden tab that shares a window, such as one opened before the proxy, still takes focus. It's the only way to make that tab visible.
+- **Links and pop-ups:** only CDP requests are rewritten. Tabs a page opens by itself aren't, and the menu bar app handles those afterwards.
+- **Keeping it running:** nothing restarts the proxy if it stops, and clients connected through it lose their connection. Start it from your launch script, and restart it after updating browserpark.
+- **Security:** it listens on 127.0.0.1 only, the same exposure as Chrome's own debugging port.
+
+Without the proxy, prefer `open` in an existing tab. Using a maximised window instead of full screen should also avoid the jump to the desktop, though we haven't tested that.
 
 ## Not tested yet
 
@@ -122,10 +152,14 @@ Chrome activates itself when a tab is selected over CDP (`Target.activateTarget`
 
 ## Tests
 
-The tests drive a throwaway Chrome on port 9299 with a temporary profile. They need `agent-browser` and `node`, and they'll briefly take your focus and open windows.
+The tests drive a throwaway Chrome on port 9299 with a temporary profile. They need `agent-browser` and `node`, and they'll briefly take your focus and open windows. Run them more than once, because some focus problems only show up in some runs.
 
 ```bash
 tests/test_park.sh
+```
+
+```bash
+tests/test_proxy.sh
 ```
 
 ## License

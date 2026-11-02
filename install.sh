@@ -17,7 +17,7 @@ if [ "${1:-}" = "--uninstall" ]; then
 fi
 
 mkdir -p "$(dirname "$BIN")"
-swiftc -O -swift-version 5 "$HERE/main.swift" -o "$BIN"
+swiftc -O -swift-version 5 "$HERE/main.swift" "$HERE/proxy.swift" -o "$BIN"
 echo "Built $BIN"
 
 [ "${1:-}" = "--build-only" ] && exit 0
