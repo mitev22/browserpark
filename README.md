@@ -77,7 +77,7 @@ browserpark toggle --port 9222
 
 While the menu bar app runs, it also:
 
-- **Returns your focus:** if a parked Chrome grabs focus, such as when an agent opens a tab, focus goes straight back to the app you were using.
+- **Returns your focus:** if a parked Chrome grabs focus, such as when an agent opens a tab, focus goes back to the app you were using, usually within about 60 ms. That's a repair, not a prevention: keystrokes in that gap can be lost, and if your app is in full screen the screen flickers to the desktop for about 150 ms, because macOS switches Spaces when Chrome takes focus. See [Known limitation](#known-limitation-opening-tabs-takes-focus).
 - **Parks new windows:** a new window from a parked browser gets parked within about 3 seconds.
 
 ### Park automatically at launch
@@ -109,6 +109,10 @@ Browsers are named after their `--user-data-dir` folder. To set your own names, 
 - **Showing from a script:** `browserpark show` works while the menu app runs, because it moves the window before taking focus.
 - **Keyboard focus:** a parked page reports `document.hasFocus()` as false, like any background window. Pages that only react when focused may behave differently, so bring the window back if something seems stuck.
 - **Page titles:** the menu shows each browser's first tab title. It stays on your Mac.
+
+## Known limitation: opening tabs takes focus
+
+Chrome activates itself when a tab is selected over CDP (`Target.activateTarget`), which is what `agent-browser tab new` does. browserpark can't block that from outside Chrome. Navigating in the current tab, clicking, screenshots and `eval` don't take focus, so prefer `open` in an existing tab where you can. Using a maximised window instead of full screen avoids the Space switch, but not the brief loss of focus.
 
 ## Not tested yet
 
