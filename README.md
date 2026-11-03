@@ -75,10 +75,9 @@ browserpark show my-profile
 browserpark toggle --port 9222
 ```
 
-While the menu bar app runs, it also:
+While the menu bar app runs, it also parks new windows from a parked browser, within about 3 seconds.
 
-- **Returns your focus:** if a parked Chrome grabs focus, such as when an agent opens a tab, focus goes back to the app you were using, usually within about 60 ms. That's a repair, not a prevention: keystrokes in that gap can be lost, and if your app is in full screen the screen flickers to the desktop for about 150 ms. [The proxy](#stop-agents-taking-your-focus-the-proxy) prevents it.
-- **Parks new windows:** a new window from a parked browser gets parked within about 3 seconds.
+It doesn't fight Chrome for keyboard focus. An earlier version sent focus back whenever a parked Chrome took it, but it couldn't tell an agent from you swiping to the desktop or picking Chrome in Cmd-Tab, so it kept throwing people back into the app they'd just left. Use [the proxy](#stop-agents-taking-your-focus-the-proxy) to stop agents taking focus.
 
 ### Park automatically at launch
 
@@ -105,14 +104,13 @@ Browsers are named after their `--user-data-dir` folder. To set your own names, 
 ## Good to know
 
 - **Logins:** you can't see a parked window, so bring it back before logging in or doing MFA.
-- **Dock and Cmd-Tab:** clicking a parked Chrome's Dock icon or Cmd-Tabbing to it appears to do nothing, because focus bounces straight back. Use the menu.
-- **Showing from a script:** `browserpark show` works while the menu app runs, because it moves the window before taking focus.
+- **Dock and Cmd-Tab:** each browser gets its own identical Chrome icon. Picking a parked one makes it the active app, but its windows stay off-screen, so it looks like nothing happened. Use the menu to bring it back.
 - **Keyboard focus:** a parked page reports `document.hasFocus()` as false, like any background window. Pages that only react when focused may behave differently, so bring the window back if something seems stuck.
 - **Page titles:** the menu shows each browser's first tab title. It stays on your Mac.
 
 ## Stop agents taking your focus: the proxy
 
-Chrome makes itself the active app whenever a tab is selected over CDP, which is what `agent-browser tab new` does. If your app is in full screen, macOS then switches you to the desktop's Space mid-sentence. The menu bar app can only send you back afterwards, so keystrokes in that gap can be lost.
+Chrome makes itself the active app whenever a tab is selected over CDP, which is what `agent-browser tab new` does. If your app is in full screen, macOS then switches you to the desktop's Space mid-sentence, and what you type goes to Chrome.
 
 The proxy prevents it. Start it for a browser's debugging port, then connect your client to that port plus 10000:
 
@@ -137,8 +135,8 @@ In our tests, with another app in front, agent-browser and Playwright opened, sw
 **Limits**
 
 - **New tabs are separate windows.** Pages still work normally, but you'll see one parked window per tab instead of tabs in one window.
-- **Older tabs:** selecting a hidden tab that shares a window, such as one opened before the proxy, still takes focus. It's the only way to make that tab visible.
-- **Links and pop-ups:** only CDP requests are rewritten. Tabs a page opens by itself aren't, and the menu bar app handles those afterwards.
+- **Tabs sharing a window still take focus.** Selecting a hidden tab in a shared window is the only way to make it visible, so the proxy passes it on. Shared windows come from tabs opened before the proxy, a client that connects to Chrome's own port instead of the proxy, and Chrome restoring a previous session into one window. Close those tabs and open them again through the proxy.
+- **Links and pop-ups:** only CDP requests are rewritten. Tabs a page opens by itself aren't, so they can take focus. The menu bar app parks their windows afterwards.
 - **Keeping it running:** nothing restarts the proxy if it stops, and clients connected through it lose their connection. Start it from your launch script, and restart it after updating browserpark.
 - **Security:** it listens on 127.0.0.1 only, the same exposure as Chrome's own debugging port.
 

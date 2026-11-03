@@ -9,9 +9,10 @@
 // Why off-screen and not Cmd-H or minimise: both flip document.visibilityState to "hidden" and stall
 // requestAnimationFrame, which breaks pages that wait to be visible. See README.md.
 //
-// The menu bar app also does two things while running:
-//   - hands keyboard focus back when a parked Chrome activates itself (opening a tab over CDP does)
-//   - parks new windows that appear in an instance that is already parked
+// While running, the menu bar app also parks new windows that appear in an instance that is already parked.
+// It doesn't fight Chrome for keyboard focus: it can't tell an agent's activation from the user's swipe,
+// Cmd-Tab or Dock click, and bouncing focus back threw users out of the desktop (2026-11-03). The proxy
+// stops agents taking focus instead.
 
 import AppKit
 
@@ -189,7 +190,6 @@ struct Instance {
     var windows: [WindowInfo] = []
     var pageTitle = ""
     var parked: Bool { running && !windows.isEmpty && windows.allSatisfy(Geometry.isParked) }
-    var anyParked: Bool { windows.contains(where: Geometry.isParked) }
 }
 
 func windowInfo(_ reply: [String: Any], id: Int) -> WindowInfo? {
@@ -262,8 +262,6 @@ final class MenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var browsers: [Browser] = []
     private var instances: [Int: Instance] = [:]
     private var knownWindows: [Int: Set<Int>] = [:]
-    private var parkedPids = Set<pid_t>()
-    private var lastFront: NSRunningApplication?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -273,28 +271,9 @@ final class MenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
         statusItem.menu = menu
 
-        lastFront = NSWorkspace.shared.frontmostApplication
-        NSWorkspace.shared.notificationCenter.addObserver(
-            self, selector: #selector(didActivate(_:)),
-            name: NSWorkspace.didActivateApplicationNotification, object: nil)
-
         Task { await refresh() }
         Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.refresh() }
-        }
-    }
-
-    @objc private func didActivate(_ note: Notification) {
-        guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
-        let pid = app.processIdentifier
-        guard parkedPids.contains(pid), let port = browsers.first(where: { $0.pid == pid })?.port else {
-            lastFront = app
-            return
-        }
-        // `browserpark show` from a terminal moves every window before activating Chrome, so that's
-        // the case to let through. A pop-up leaves the other windows parked, so it still bounces.
-        Task {
-            if await inspect(port: port).anyParked { lastFront?.activate(options: []) }
         }
     }
 
@@ -304,7 +283,6 @@ final class MenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let ports = Set(browsers.map(\.port))
         instances = instances.filter { ports.contains($0.key) }
         knownWindows = knownWindows.filter { ports.contains($0.key) }
-        var parked = Set<pid_t>()
         for browser in browsers {
             let port = browser.port
             let current = await inspect(port: port)
@@ -320,10 +298,7 @@ final class MenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 try? await park(port: port, only: Set(newOnScreen.map(\.id)))
                 instances[port] = await inspect(port: port)
             }
-
-            if instances[port]?.parked == true, let pid = browser.pid { parked.insert(pid) }
         }
-        parkedPids = parked
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -362,8 +337,6 @@ final class MenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let instance = instances[browser.port] ?? Instance()
         Task {
             if instance.running {
-                // Clear the focus guard first, or show() activating Chrome would bounce straight back.
-                if let pid = browser.pid { parkedPids.remove(pid) }
                 try? await toggle(port: browser.port, pid: browser.pid)
             } else if let start = browser.start {
                 await run(start)

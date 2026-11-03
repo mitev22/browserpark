@@ -92,26 +92,14 @@ check "toggle: parks" "$(state)" parked
 check "toggle: shows" "$(state)" showing
 "$BIN" park --port $PORT
 
-# Menu bar app behaviours.
-# Not `tell application "Finder" to activate`: that does not reliably leave Finder in front.
-osascript -l JavaScript -e "ObjC.import('AppKit'); \$.NSRunningApplication.runningApplicationWithProcessIdentifier($(pgrep -x Finder)).activateWithOptions(0)" >/dev/null
-sleep 0.5
+# Menu bar app: a new window in a parked browser gets parked too.
 "$BIN" &
 MENU_PID=$!
 sleep 4
-
-# Read after the wait: another app can legitimately take focus during it.
-BEFORE="$(front)"
-agent-browser tab new https://example.org --session $S >/dev/null 2>&1
-sleep 1
-check "guard: focus returned after tab new" "$(front)" "$BEFORE"
-check "guard: still parked after tab new" "$(state)" parked
-
-windows new-window
+node "$ROOT/tests/windows.mjs" $PORT new-window
 sleep 5
-check "guard: new window gets parked" "$(state)" parked
-check "guard: instance has two windows" "$(windows count)" 2
-if [ "$(front)" = "$CHROME_PID" ]; then check "guard: focus not left on parked Chrome" no yes; else echo "PASS guard: focus not left on parked Chrome"; fi
+check "menu app: new window gets parked" "$(state)" parked
+check "menu app: instance has two windows" "$(windows count)" 2
 
 echo
 [ "$FAILS" = 0 ] && echo "ALL PASSED" || echo "$FAILS FAILED"

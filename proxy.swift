@@ -3,7 +3,8 @@
 //
 // Chrome makes itself the active app when a tab is selected over CDP. Only the client's requests can
 // avoid that, so the proxy rewrites them:
-//   Target.createTarget     -> opens in its own background window, because a background tab in a shared
+//   Target.createTarget,
+//   GET/PUT /json/new       -> opens in its own background window, because a background tab in a shared
 //                              window reports document.visibilityState "hidden" and stalls
 //   Target.activateTarget,
 //   Page.bringToFront       -> answered without reaching Chrome when the tab is already showing in its window
@@ -173,6 +174,10 @@ final class ProxyServer {
                 return
             }
         }
+        if path.hasPrefix("/json/new") {
+            await openTab(connection, path: path)
+            return
+        }
         guard let url = URL(string: "http://127.0.0.1:\(chromePort)\(path)") else {
             await respond(connection, status: 400, contentType: "text/plain", body: Data())
             return
@@ -190,6 +195,43 @@ final class ProxyServer {
             .replacingOccurrences(of: "localhost:\(chromePort)", with: "127.0.0.1:\(listenPort)")
         await respond(connection, status: http.statusCode,
                       contentType: http.value(forHTTPHeaderField: "Content-Type") ?? "application/json", body: Data(text.utf8))
+    }
+
+    // GET/PUT /json/new?<url> would open a foreground tab in an existing window and take focus,
+    // so it's done the same way as Target.createTarget instead.
+    private func openTab(_ connection: NWConnection, path: String) async {
+        let query = path.firstIndex(of: "?").map { String(path[path.index(after: $0)...]) } ?? ""
+        let address = query.removingPercentEncoding.flatMap { $0.isEmpty ? nil : $0 } ?? "about:blank"
+        guard let cdp = try? await CDP(port: chromePort),
+              let created = try? await cdp.send("Target.createTarget", await backgroundWindowParams(["url": address])),
+              let targetId = created["targetId"] as? String else {
+            await respond(connection, status: 500, contentType: "text/plain", body: Data("Could not open the tab".utf8))
+            return
+        }
+        let list = (try? await CDP.get(chromePort, "/json/list")).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [[String: Any]] }
+        let target = list?.first { $0["id"] as? String == targetId } ?? ["id": targetId, "type": "page", "url": address]
+        let body = (try? JSONSerialization.data(withJSONObject: target)) ?? Data()
+        let text = String(decoding: body, as: UTF8.self)
+            .replacingOccurrences(of: "127.0.0.1:\(chromePort)", with: "127.0.0.1:\(listenPort)")
+            .replacingOccurrences(of: "localhost:\(chromePort)", with: "127.0.0.1:\(listenPort)")
+        await respond(connection, status: 200, contentType: "application/json", body: Data(text.utf8))
+    }
+
+    func backgroundWindowParams(_ params: [String: Any]) async -> [String: Any] {
+        var updated = params
+        updated["newWindow"] = true
+        updated["background"] = true
+        let instance = await inspect(port: chromePort)
+        if let first = instance.windows.first {
+            updated["width"] = updated["width"] ?? first.width
+            updated["height"] = updated["height"] ?? first.height
+            if instance.parked {
+                let origin = Geometry.parkedOrigin(width: first.width)
+                updated["left"] = origin.left
+                updated["top"] = origin.top
+            }
+        }
+        return updated
     }
 
     // False when selecting the tab would change nothing except stealing focus.
@@ -344,7 +386,7 @@ final class ProxiedSocket {
 
         switch method {
         case "Target.createTarget":
-            json["params"] = await backgroundWindowParams(params)
+            json["params"] = await server.backgroundWindowParams(params)
             if let data = try? JSONSerialization.data(withJSONObject: json) {
                 try? await upstream.send(.string(String(decoding: data, as: UTF8.self)))
             } else {
@@ -364,23 +406,6 @@ final class ProxiedSocket {
         default:
             try? await upstream.send(.string(text))
         }
-    }
-
-    private func backgroundWindowParams(_ params: [String: Any]) async -> [String: Any] {
-        var updated = params
-        updated["newWindow"] = true
-        updated["background"] = true
-        let instance = await inspect(port: server.chromePort)
-        if let first = instance.windows.first {
-            updated["width"] = updated["width"] ?? first.width
-            updated["height"] = updated["height"] ?? first.height
-            if instance.parked {
-                let origin = Geometry.parkedOrigin(width: first.width)
-                updated["left"] = origin.left
-                updated["top"] = origin.top
-            }
-        }
-        return updated
     }
 
     private func replyEmpty(to request: [String: Any]) async {

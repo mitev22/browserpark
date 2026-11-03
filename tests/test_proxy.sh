@@ -107,6 +107,13 @@ LONG="$(python3 -c 'print("x"*200000)')"
 check "large request: 200 KB intact" "$(ab eval "'$LONG'.length")" 200000
 check "after all that: no focus taken" "$(chrome_activations)" 0
 
+NEW="$(curl -s -X PUT "http://127.0.0.1:$PROXY/json/new?https://example.com/?from=json-new")"
+sleep 1
+check "json/new: no focus taken" "$(chrome_activations)" 0
+check "json/new: reply points at the proxy" "$(echo "$NEW" | grep -c "127.0.0.1:$PORT")" 0
+check "json/new: opened in its own window" "$(node "$ROOT/tests/windows.mjs" $PORT count)" 4
+check "json/new: Chrome stays parked" "$(state)" parked
+
 BEFORE="$(tabs | wc -l | tr -d ' ')"
 ab tab close >/dev/null
 check "tab close: one fewer tab" "$(tabs | wc -l | tr -d ' ')" "$((BEFORE - 1))"
