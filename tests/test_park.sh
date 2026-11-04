@@ -2,6 +2,8 @@
 # Integration test: needs a logged-in macOS session, Google Chrome, agent-browser and node.
 # Drives a throwaway Chrome (temp profile, port 9299). It briefly takes focus and opens windows.
 set -u
+# BROWSERPARK_TEST_QUIET=1 skips the steps that deliberately take focus, so the tests can run while you work.
+QUIET="${BROWSERPARK_TEST_QUIET:-0}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="${BROWSERPARK_BIN:-$ROOT/.build/browserpark}"
 if [ -z "${BROWSERPARK_BIN:-}" ]; then
@@ -35,10 +37,12 @@ state() { "$BIN" status | awk -F'\t' -v p="$PORT" '$2==p{print $3}'; }
 windows() { node "$ROOT/tests/windows.mjs" $PORT "$1"; }
 
 launch() { # extra chrome flags
-  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --remote-debugging-port=$PORT --user-data-dir="$PROFILE/chrome" \
-    "$@" --no-first-run --no-default-browser-check about:blank >/dev/null 2>&1 &
-  CHROME_PID=$!
+  # Chrome activates itself when its first window opens, so start it with none and open one in the background.
+  open -n -g -a "Google Chrome" --args --remote-debugging-port=$PORT --user-data-dir="$PROFILE/chrome" \
+    "$@" --no-startup-window --no-first-run --no-default-browser-check
   for _ in 1 2 3 4 5 6 7 8 9 10; do curl -s "http://localhost:$PORT/json/version" >/dev/null && break; sleep 1; done
+  CHROME_PID="$(lsof -nP -iTCP:$PORT -sTCP:LISTEN -t | head -1)"
+  node "$ROOT/tests/windows.mjs" $PORT background-window
   sleep 1
   agent-browser connect $PORT --session $S >/dev/null 2>&1
   agent-browser open https://example.com --session $S >/dev/null 2>&1
@@ -80,26 +84,34 @@ check "park: screenshot written" "$([ -s "$PROFILE/parked.png" ] && echo yes)" y
 agent-browser click a --session $S >/dev/null 2>&1
 check "park: click works" "$(agent-browser get url --session $S)" "https://www.iana.org/help/example-domains"
 
-"$BIN" show --port $PORT
-sleep 0.5
-check "show: state" "$(state)" showing
-check "show: fully on the desktop" "$(windows fully-onscreen)" yes
-check "show: Chrome is frontmost" "$(front)" "$CHROME_PID"
+if [ "$QUIET" = 1 ]; then
+  echo "SKIP show/toggle: quiet mode"
+else
+  "$BIN" show --port $PORT
+  sleep 0.5
+  check "show: state" "$(state)" showing
+  check "show: fully on the desktop" "$(windows fully-onscreen)" yes
+  check "show: Chrome is frontmost" "$(front)" "$CHROME_PID"
 
-"$BIN" toggle --port $PORT
-check "toggle: parks" "$(state)" parked
-"$BIN" toggle --port $PORT
-check "toggle: shows" "$(state)" showing
-"$BIN" park --port $PORT
+  "$BIN" toggle --port $PORT
+  check "toggle: parks" "$(state)" parked
+  "$BIN" toggle --port $PORT
+  check "toggle: shows" "$(state)" showing
+  "$BIN" park --port $PORT
+fi
 
-# Menu bar app: a new window in a parked browser gets parked too.
-"$BIN" &
-MENU_PID=$!
-sleep 4
-node "$ROOT/tests/windows.mjs" $PORT new-window
-sleep 5
-check "menu app: new window gets parked" "$(state)" parked
-check "menu app: instance has two windows" "$(windows count)" 2
+# Menu bar app: a new window in a parked browser gets parked too. A normal new window takes focus.
+if [ "$QUIET" = 1 ]; then
+  echo "SKIP menu app new window: quiet mode"
+else
+  "$BIN" &
+  MENU_PID=$!
+  sleep 4
+  node "$ROOT/tests/windows.mjs" $PORT new-window
+  sleep 5
+  check "menu app: new window gets parked" "$(state)" parked
+  check "menu app: instance has two windows" "$(windows count)" 2
+fi
 
 echo
 [ "$FAILS" = 0 ] && echo "ALL PASSED" || echo "$FAILS FAILED"

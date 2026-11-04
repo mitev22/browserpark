@@ -3,6 +3,8 @@
 # Drives a throwaway Chrome (temp profile, port 9299, proxy on 19299).
 # Only the last section takes focus, and it says so.
 set -u
+# BROWSERPARK_TEST_QUIET=1 skips the steps that deliberately take focus, so the tests can run while you work.
+QUIET="${BROWSERPARK_TEST_QUIET:-0}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="$ROOT/.build/browserpark"
 WATCH="$ROOT/.build/focus_watch"
@@ -32,6 +34,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
+front_now_is_chrome() { [ "$(osascript -l JavaScript -e "ObjC.import('AppKit'); \$.NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier")" = "$CHROME_PID" ] && echo yes || echo no; }
 check() { # name, actual, expected
   if [ "$2" = "$3" ]; then echo "PASS $1"; else echo "FAIL $1: got '$2', wanted '$3'"; FAILS=$((FAILS + 1)); fi
 }
@@ -42,13 +45,14 @@ state() { "$BIN" status | awk -F'\t' -v p="$PORT" '$2==p{print $3}'; }
 chrome_activations() { grep -c "^$CHROME_PID$" "$TMP/focus.log"; }
 tabs() { ab tab | grep -o '\[t[0-9]*\]' | tr -d '[]'; }
 
-"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --remote-debugging-port=$PORT --user-data-dir="$TMP/chrome" \
+# Chrome activates itself when its first window opens, so start it with none: clients open windows through the proxy.
+open -n -g -a "Google Chrome" --args --remote-debugging-port=$PORT --user-data-dir="$TMP/chrome" \
   --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling \
-  --no-first-run --no-default-browser-check about:blank >/dev/null 2>&1 &
-CHROME_PID=$!
+  --no-startup-window --no-first-run --no-default-browser-check
 for _ in 1 2 3 4 5 6 7 8 9 10; do curl -s "http://127.0.0.1:$PORT/json/version" >/dev/null && break; sleep 1; done
+CHROME_PID="$(lsof -nP -iTCP:$PORT -sTCP:LISTEN -t | head -1)"
+check "launch: Chrome didn't take focus" "$(front_now_is_chrome)" no
 sleep 1
-"$BIN" park --port $PORT
 
 "$BIN" proxy --port $PORT >/dev/null &
 PROXY_PID=$!
@@ -66,8 +70,8 @@ check "security: listens on loopback only" "$LISTEN" "127.0.0.1:$PROXY"
 # again and no activation event fires, so every focus check below would pass without testing anything.
 activate() { osascript -l JavaScript -e "ObjC.import('AppKit'); \$.NSRunningApplication.runningApplicationWithProcessIdentifier($1).activateWithOptions(0)" >/dev/null; }
 front() { osascript -l JavaScript -e "ObjC.import('AppKit'); \$.NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier"; }
-activate "$(pgrep -x Finder)"
-sleep 1
+# Quiet mode leaves focus alone: Chrome never had a window, so it can't already be in front.
+[ "$QUIET" = 1 ] || { activate "$(pgrep -x Finder)"; sleep 1; }
 if [ "$(front)" = "$CHROME_PID" ]; then check "setup: Chrome is not in front" yes no; else echo "PASS setup: Chrome is not in front"; fi
 
 "$WATCH" > "$TMP/focus.log" &
@@ -128,6 +132,20 @@ sleep 1
 ab connect $PROXY >/dev/null
 check "proxy restarted: client can reconnect" "$(ab eval '1+1')" 2
 
+# Taking over a port: Chrome stays on its own, the proxy also answers on another one.
+kill "$PROXY_PID" 2>/dev/null
+sleep 1
+"$BIN" proxy --port $PORT --listen 19298 --listen $PROXY >/dev/null &
+PROXY_PID=$!
+sleep 1
+check "listen: answers on the first port" "$(curl -s "http://127.0.0.1:19298/json/version" | grep -c "127.0.0.1:19298/devtools/browser")" 1
+check "listen: answers on the second port" "$(curl -s "http://127.0.0.1:$PROXY/json/version" | grep -c "127.0.0.1:$PROXY/devtools/browser")" 1
+ab connect $PROXY >/dev/null
+check "listen: client works" "$(ab eval '2+2')" 4
+
+if [ "$QUIET" = 1 ]; then
+  echo "SKIP shared tab and control: quiet mode"
+else
 echo "--- next step takes focus on purpose"
 # A hidden tab sharing a window must still become visible when selected, even though that takes focus.
 HIDDEN="$(node "$ROOT/tests/windows.mjs" $PORT shared-tab)"
@@ -146,6 +164,8 @@ activate "$CHROME_PID"
 sleep 1
 check "control: focus watcher saw Chrome activate" "$(($(chrome_activations) - BEFORE))" 1
 activate "$(pgrep -x Finder)"
+
+fi
 
 echo
 [ "$FAILS" = 0 ] && echo "ALL PASSED" || echo "$FAILS FAILED"

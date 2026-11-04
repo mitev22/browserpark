@@ -124,6 +124,22 @@ agent-browser connect 19222 --session my-session
 
 Your browser and its logins don't restart. Playwright's `connect_over_cdp("http://127.0.0.1:19222")` works the same way.
 
+### Make it impossible to bypass
+
+A client that connects to Chrome's own port skips the proxy, and old scripts and notes tend to do exactly that. To prevent it, put Chrome on a private port and give the proxy the port everything already uses:
+
+```bash
+open -n -g -a "Google Chrome" --args --remote-debugging-port=29222 \
+  --user-data-dir="$HOME/.chrome-agent" --no-startup-window \
+  --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling
+```
+
+```bash
+nohup browserpark proxy --port 29222 --listen 9222 >/dev/null 2>&1 &
+```
+
+`--no-startup-window` and `open -g` matter too. Chrome makes itself the active app when its first window opens, so it starts with none, and the first tab a client opens gets a parked background window from the proxy. In our tests, starting this way, connecting, opening a page and opening another tab took focus zero times.
+
 | Client asks for | What the proxy does |
 |---|---|
 | A new tab (`Target.createTarget`) | Opens it in its own background window, parked if the browser is parked. A background tab in a shared window wouldn't work, because its page reports itself as hidden. |
@@ -137,6 +153,7 @@ In our tests, with another app in front, agent-browser and Playwright opened, sw
 - **New tabs are separate windows.** Pages still work normally, but you'll see one parked window per tab instead of tabs in one window.
 - **Tabs sharing a window still take focus.** Selecting a hidden tab in a shared window is the only way to make it visible, so the proxy passes it on. Shared windows come from tabs opened before the proxy, a client that connects to Chrome's own port instead of the proxy, and Chrome restoring a previous session into one window. Close those tabs and open them again through the proxy.
 - **Links and pop-ups:** only CDP requests are rewritten. Tabs a page opens by itself aren't, so they can take focus. The menu bar app parks their windows afterwards.
+- **Ports freed a moment ago:** if Chrome just quit, its port can stay busy for a few seconds. The proxy keeps trying for 30 seconds.
 - **Keeping it running:** nothing restarts the proxy if it stops, and clients connected through it lose their connection. Start it from your launch script, and restart it after updating browserpark.
 - **Security:** it listens on 127.0.0.1 only, the same exposure as Chrome's own debugging port.
 
@@ -150,7 +167,7 @@ Without the proxy, prefer `open` in an existing tab. Using a maximised window in
 
 ## Tests
 
-The tests drive a throwaway Chrome on port 9299 with a temporary profile. They need `agent-browser` and `node`, and they'll briefly take your focus and open windows. Run them more than once, because some focus problems only show up in some runs.
+The tests drive a throwaway Chrome on port 9299 with a temporary profile. They need `agent-browser` and `node`, and they'll briefly take your focus and open windows. Run them more than once, because some focus problems only show up in some runs. Set `BROWSERPARK_TEST_QUIET=1` to skip the steps that take focus on purpose, so you can keep working while they run.
 
 ```bash
 tests/test_park.sh

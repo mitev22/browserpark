@@ -110,7 +110,9 @@ final class ProxyServer {
         session = URLSession(configuration: configuration)
     }
 
-    func start() throws {
+    // A port freed a moment ago, for example by a Chrome that just quit, can stay busy for a few
+    // seconds, so keep trying for half a minute before giving up.
+    func start(attempt: Int = 1) throws {
         guard let port = NWEndpoint.Port(rawValue: UInt16(listenPort)) else { throw URLError(.badURL) }
         let parameters = NWParameters.tcp
         // Loopback only: anything that can reach this port can control the browser.
@@ -121,8 +123,11 @@ final class ProxyServer {
             connection.start(queue: .global())
             Task { await self?.handle(connection) }
         }
-        listener.stateUpdateHandler = { [listenPort] state in
-            if case .failed(let error) = state { fail("can't listen on port \(listenPort): \(error)") }
+        listener.stateUpdateHandler = { [weak self, listenPort] state in
+            guard case .failed(let error) = state else { return }
+            listener.cancel()
+            guard attempt < 30, let self else { fail("can't listen on port \(listenPort): \(error)") }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 1) { try? self.start(attempt: attempt + 1) }
         }
         listener.start(queue: .global())
         self.listener = listener
@@ -222,14 +227,14 @@ final class ProxyServer {
         updated["newWindow"] = true
         updated["background"] = true
         let instance = await inspect(port: chromePort)
-        if let first = instance.windows.first {
-            updated["width"] = updated["width"] ?? first.width
-            updated["height"] = updated["height"] ?? first.height
-            if instance.parked {
-                let origin = Geometry.parkedOrigin(width: first.width)
-                updated["left"] = origin.left
-                updated["top"] = origin.top
-            }
+        let width = (updated["width"] as? Int) ?? instance.windows.first?.width ?? 1280
+        updated["width"] = width
+        updated["height"] = updated["height"] ?? instance.windows.first?.height ?? 900
+        // No windows yet means Chrome was started with --no-startup-window to stay out of the way, so park.
+        if instance.parked || instance.windows.isEmpty {
+            let origin = Geometry.parkedOrigin(width: width)
+            updated["left"] = origin.left
+            updated["top"] = origin.top
         }
         return updated
     }
@@ -416,14 +421,21 @@ final class ProxiedSocket {
     }
 }
 
-func runProxy(chromePort: Int) async {
-    let server = ProxyServer(chromePort: chromePort, listenPort: chromePort + proxyPortOffset)
-    do {
-        try server.start()
-    } catch {
-        fail("can't start the proxy: \(error.localizedDescription)")
+// Default listen port is Chrome's + 10000. To make the proxy impossible to bypass, start Chrome on a
+// private port and give the proxy the port everything already uses (see README).
+func runProxy(chromePort: Int, listenPorts: [Int]) async {
+    let ports = listenPorts.isEmpty ? [chromePort + proxyPortOffset] : listenPorts
+    var servers: [ProxyServer] = []
+    for port in ports {
+        let server = ProxyServer(chromePort: chromePort, listenPort: port)
+        do {
+            try server.start()
+        } catch {
+            fail("can't start the proxy on \(port): \(error.localizedDescription)")
+        }
+        servers.append(server)
+        print("Proxying 127.0.0.1:\(port) to Chrome on 127.0.0.1:\(chromePort)")
     }
-    print("Proxying 127.0.0.1:\(server.listenPort) to Chrome on 127.0.0.1:\(chromePort)")
     while true {
         try? await Task.sleep(nanoseconds: 3_600_000_000_000)
     }

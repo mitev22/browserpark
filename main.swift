@@ -4,7 +4,8 @@
 //   browserpark status                        one line per browser
 //   browserpark park|show|toggle <name>|all   by name
 //   browserpark park|show|toggle --port N     by CDP port
-//   browserpark proxy --port N                stop tab commands taking focus: connect clients to N + 10000
+//   browserpark proxy --port N [--listen M]   stop tab commands taking focus: connect clients to M
+//                                             (repeatable; default N + 10000)
 //
 // Why off-screen and not Cmd-H or minimise: both flip document.visibilityState to "hidden" and stall
 // requestAnimationFrame, which breaks pages that wait to be visible. See README.md.
@@ -378,8 +379,20 @@ func fail(_ message: String) -> Never {
 func runCLI(_ args: [String]) async {
     let command = args[0]
     if command == "proxy" {
-        guard args.count == 3, args[1] == "--port", let port = Int(args[2]) else { fail("usage: browserpark proxy --port N") }
-        await runProxy(chromePort: port)
+        var chromePort: Int?
+        var listen: [Int] = []
+        var index = 1
+        while index + 1 < args.count {
+            guard let value = Int(args[index + 1]) else { fail("usage: browserpark proxy --port N [--listen M]...") }
+            switch args[index] {
+            case "--port": chromePort = value
+            case "--listen": listen.append(value)
+            default: fail("usage: browserpark proxy --port N [--listen M]...")
+            }
+            index += 2
+        }
+        guard let chromePort, index == args.count else { fail("usage: browserpark proxy --port N [--listen M]...") }
+        await runProxy(chromePort: chromePort, listenPorts: listen)
         return
     }
     let browsers = discoverBrowsers()
@@ -393,7 +406,7 @@ func runCLI(_ args: [String]) async {
     }
 
     guard ["park", "show", "toggle"].contains(command), args.count >= 2 else {
-        fail("usage: browserpark [status | park|show|toggle <name>|all | park|show|toggle --port N | proxy --port N]")
+        fail("usage: browserpark [status | park|show|toggle <name>|all | park|show|toggle --port N | proxy --port N [--listen M]...]")
     }
     var targets: [Browser]
     if args[1] == "--port" {

@@ -27,6 +27,7 @@ for (const t of targets.filter((t) => t.type === "page")) {
 if (cmd === "count") console.log(windows.size);
 if (cmd === "fully-onscreen") console.log([...windows.values()].every((b) => b.left >= 0 && b.top >= 0) ? "yes" : "no");
 if (cmd === "new-window") await send("Target.createTarget", { url: "about:blank", newWindow: true });
+if (cmd === "background-window") await send("Target.createTarget", { url: "about:blank", newWindow: true, background: true });
 if (cmd === "shared-tab") {
   // A background tab beside the first page, opened on Chrome's own port so the proxy can't change it.
   const { targetId } = await send("Target.createTarget", { url: "https://example.edu", background: true });
